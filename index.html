@@ -4,6 +4,7 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700&family=Instrument+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.8.5/d3.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/topojson-client@3.1.0/dist/topojson-client.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <style>
 /* Layout: full-viewport instrument. Header bar; filter rail | map | detail panel. Phone: stacked, page scrolls. */
 :root{
@@ -318,7 +319,7 @@ $('#docOnly').onclick=()=>{state.docOnly=!state.docOnly;applyFilters()};
 function tieHTML(t){const T=TIER[t.tier];
   return '<div class="tie"><span class="badge '+T.c+'">'+T.n+'</span><div class="t">'+esc(t.title)+'</div><p>'+esc(t.detail)+'</p><ul>'+t.src.map(s=>'<li>'+(s.url?'<a href="'+esc(s.url)+'" target="_blank" rel="noopener noreferrer">'+esc(s.label)+'</a>':esc(s.label))+'</li>').join('')+'</ul></div>';}
 const AF=n=>encodeURIComponent(n);
-function exportMD(d){
+function exportLines(d){
   const L=[];const w=d.w?'https://'+d.w.replace(/^https?:\/\//,''):'';
   L.push('# '+d.n,'',d.c+', '+d.s+(d.sys?' | System: '+d.sys:'')+' | '+({public:'Public',private:'Private nonprofit',forprofit:'Private for-profit'})[d.ctl],'','Record exported '+new Date().toISOString().slice(0,10)+' from the Palestine Divestment Map (data updated '+UPDATED+'). Status: '+({pilot:'researched',awards:'award data only',queued:'not yet researched'})[d.st]+'. A missing item means not found or not checked, never clear.','');
   if(d.st!=='queued'){L.push('## Federal awards (USAspending.gov, FY2021-25)','',d.nomatch?'No awards found under this school\'s own name (not a finding of zero).':'DoD: '+money(d.dod)+' | DHS: '+money(d.dhs),'');
@@ -336,15 +337,44 @@ function exportMD(d){
    '- Federal Audit Clearinghouse (single audits, pass-through funding): https://app.fac.gov/dissemination/search/',
    '- SEC EDGAR full-text search: https://efts.sec.gov/LATEST/search-index?q='+AF('"'+d.n+'"'),
    w?'- School website: '+w:'');
-  return L.join('\n')}
+  return L}
+function exportMD(d){return exportLines(d).join('\n')}
+function docxEsc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function docxPara(text,o){o=o||{};
+  const rPr=(o.b?'<w:b/>':'')+(o.sz?'<w:sz w:val="'+o.sz+'"/><w:szCs w:val="'+o.sz+'"/>':'');
+  const pPr='<w:pPr><w:spacing w:before="'+(o.before||0)+'" w:after="'+(o.after!=null?o.after:120)+'"/>'+(o.indent?'<w:ind w:left="'+o.indent+'"/>':'')+'</w:pPr>';
+  const rPrWrap=rPr?'<w:rPr>'+rPr+'</w:rPr>':'';
+  return '<w:p>'+pPr+'<w:r>'+rPrWrap+'<w:t xml:space="preserve">'+docxEsc(text)+'</w:t></w:r></w:p>';}
+function linesToDocxBody(lines){let xml='';
+  lines.forEach(line=>{let m;
+    if(line===''){xml+='<w:p/>';}
+    else if(m=line.match(/^# (.*)/)){xml+=docxPara(m[1],{b:1,sz:32,before:240,after:160});}
+    else if(m=line.match(/^## (.*)/)){xml+=docxPara(m[1],{b:1,sz:26,before:200,after:120});}
+    else if(m=line.match(/^### (.*)/)){xml+=docxPara(m[1],{b:1,sz:24,before:160,after:80});}
+    else if(m=line.match(/^- (.*)/)){xml+=docxPara('• '+m[1],{indent:360});}
+    else{xml+=docxPara(line,{});}});
+  return xml}
+async function buildDocxBlob(d){
+  const body=linesToDocxBody(exportLines(d));
+  const documentXml='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>'+body+'<w:sectPr><w:pgSz w:w="12240" w:h="15840"/><w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr></w:body></w:document>';
+  const contentTypes='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/></Types>';
+  const rootRels='<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>';
+  const zip=new JSZip();
+  zip.file('[Content_Types].xml',contentTypes);
+  zip.file('_rels/.rels',rootRels);
+  zip.file('word/document.xml',documentXml);
+  return zip.generateAsync({type:'blob',mimeType:'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});}
 function bindExport(d){const b=$('#exCopy'),c=$('#exDl');if(!b)return;
   b.onclick=async()=>{try{await navigator.clipboard.writeText(exportMD(d));b.textContent='Copied'}catch(e){b.textContent='Copy failed'}setTimeout(()=>b.textContent='Copy record',1500)};
-  c.onclick=()=>{const u=URL.createObjectURL(new Blob([exportMD(d)],{type:'text/markdown'})),a=document.createElement('a');a.href=u;a.download=d.n.replace(/[^a-z0-9]+/gi,'-').toLowerCase()+'-record.md';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000)}}
+  c.onclick=async()=>{c.disabled=true;c.textContent='Building…';
+    try{const blob=await buildDocxBlob(d);const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=d.n.replace(/[^a-z0-9]+/gi,'-').toLowerCase()+'-record.docx';document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),1000)}
+    catch(e){c.textContent='Failed'}
+    finally{c.disabled=false;setTimeout(()=>c.textContent='Download .docx',1500)}}}
 function panel(d){
   const P=$('#panel');
   if(!d){P.innerHTML='<h4>School detail</h4><p class="empty">Select a dot on the map or search for a school. Larger dots received more Department of Defense funding. Gray dots have not been researched yet, and that is not a finding.</p><p class="small">'+DATA.filter(x=>x.st==='pilot').length+' of '+DATA.length+' 4-year schools researched by hand; '+DATA.filter(x=>x.st==='awards').length+' more have award data only.</p>';return}
   let h='<h2>'+esc(d.n)+'</h2><div class="meta">'+esc(d.c)+', '+esc(d.s)+(d.sys?' · '+esc(d.sys):'')+(d.r1?' · research university':'')+'</div>';
-  h+='<div class="actions"><button class="btn" id="exCopy">Copy record</button><button class="btn" id="exDl">Download .md</button></div>';
+  h+='<div class="actions"><button class="btn" id="exCopy">Copy record</button><button class="btn" id="exDl">Download .docx</button></div>';
   if(d.st==='queued'){
     h+='<span class="badge">Not yet researched</span><p class="none" style="margin-top:12px">No research has been done on this school. The map shows nothing here because nothing has been checked, so do not read it as no ties.</p>'+(d.w?'<p><a href="https://'+esc(d.w.replace(/^https?:\/\//,''))+'" target="_blank" rel="noopener noreferrer">School website</a></p>':'');
     P.innerHTML=h;bindExport(d);return}
